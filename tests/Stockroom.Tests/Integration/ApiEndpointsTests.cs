@@ -11,11 +11,22 @@ namespace Stockroom.Tests.Integration;
 
 public class ApiEndpointsTests : IClassFixture<CustomWebApplicationFactory>
 {
-    private readonly HttpClient _client;
+    private readonly CustomWebApplicationFactory _factory;
+    private readonly HttpClient _adminClient;
+    private readonly HttpClient _anonymousClient;
 
     public ApiEndpointsTests(CustomWebApplicationFactory factory)
     {
-        _client = factory.CreateClient();
+        _factory = factory;
+        _adminClient = factory.CreateAdminClient();
+        _anonymousClient = factory.CreateClient();
+    }
+
+    [Fact]
+    public async Task UnauthenticatedRequest_Returns401Unauthorized()
+    {
+        var response = await _anonymousClient.GetAsync("/api/products");
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
     }
 
     [Fact]
@@ -31,7 +42,7 @@ public class ApiEndpointsTests : IClassFixture<CustomWebApplicationFactory>
             LowStockThreshold = 2
         };
 
-        var response = await _client.PostAsJsonAsync("/api/products", request);
+        var response = await _adminClient.PostAsJsonAsync("/api/products", request);
 
         Assert.Equal(HttpStatusCode.Created, response.StatusCode);
         Assert.NotNull(response.Headers.Location);
@@ -54,7 +65,7 @@ public class ApiEndpointsTests : IClassFixture<CustomWebApplicationFactory>
             UnitPrice = -5.00m // Negative price
         };
 
-        var response = await _client.PostAsJsonAsync("/api/products", invalidRequest);
+        var response = await _adminClient.PostAsJsonAsync("/api/products", invalidRequest);
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
         var problem = await response.Content.ReadFromJsonAsync<ValidationProblemDetails>();
@@ -73,7 +84,7 @@ public class ApiEndpointsTests : IClassFixture<CustomWebApplicationFactory>
             UnitPrice = 25m
         };
 
-        var res1 = await _client.PostAsJsonAsync("/api/products", request1);
+        var res1 = await _adminClient.PostAsJsonAsync("/api/products", request1);
         Assert.Equal(HttpStatusCode.Created, res1.StatusCode);
 
         var request2 = new CreateProductRequest
@@ -83,7 +94,7 @@ public class ApiEndpointsTests : IClassFixture<CustomWebApplicationFactory>
             UnitPrice = 35m
         };
 
-        var res2 = await _client.PostAsJsonAsync("/api/products", request2);
+        var res2 = await _adminClient.PostAsJsonAsync("/api/products", request2);
         Assert.Equal(HttpStatusCode.Conflict, res2.StatusCode);
 
         var problem = await res2.Content.ReadFromJsonAsync<ProblemDetails>();
@@ -96,7 +107,7 @@ public class ApiEndpointsTests : IClassFixture<CustomWebApplicationFactory>
     public async Task GetProductById_ExistingProduct_Returns200WithProduct()
     {
         var sku = $"GET-{Guid.NewGuid():N}"[..10];
-        var createResponse = await _client.PostAsJsonAsync("/api/products", new CreateProductRequest
+        var createResponse = await _adminClient.PostAsJsonAsync("/api/products", new CreateProductRequest
         {
             Name = "Trackball Mouse",
             SKU = sku,
@@ -107,7 +118,7 @@ public class ApiEndpointsTests : IClassFixture<CustomWebApplicationFactory>
         var created = await createResponse.Content.ReadFromJsonAsync<ProductResponse>();
         Assert.NotNull(created);
 
-        var getResponse = await _client.GetAsync($"/api/products/{created.Id}");
+        var getResponse = await _adminClient.GetAsync($"/api/products/{created.Id}");
 
         Assert.Equal(HttpStatusCode.OK, getResponse.StatusCode);
         var product = await getResponse.Content.ReadFromJsonAsync<ProductResponse>();
@@ -119,7 +130,7 @@ public class ApiEndpointsTests : IClassFixture<CustomWebApplicationFactory>
     [Fact]
     public async Task GetProductById_NonExistent_Returns404NotFoundProblemDetails()
     {
-        var response = await _client.GetAsync("/api/products/99999");
+        var response = await _adminClient.GetAsync("/api/products/99999");
 
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
         var problem = await response.Content.ReadFromJsonAsync<ProblemDetails>();
@@ -131,7 +142,7 @@ public class ApiEndpointsTests : IClassFixture<CustomWebApplicationFactory>
     public async Task StockInAndStockOut_E2EFlow_MaintainsAccurateAuditHistory()
     {
         var sku = $"FLOW-{Guid.NewGuid():N}"[..10];
-        var createRes = await _client.PostAsJsonAsync("/api/products", new CreateProductRequest
+        var createRes = await _adminClient.PostAsJsonAsync("/api/products", new CreateProductRequest
         {
             Name = "Webcam 4K",
             SKU = sku,
@@ -143,7 +154,7 @@ public class ApiEndpointsTests : IClassFixture<CustomWebApplicationFactory>
         Assert.NotNull(product);
 
         // Stock-in 10
-        var stockInRes = await _client.PostAsJsonAsync($"/api/products/{product.Id}/stock-in", new StockAdjustmentRequest
+        var stockInRes = await _adminClient.PostAsJsonAsync($"/api/products/{product.Id}/stock-in", new StockAdjustmentRequest
         {
             Quantity = 10,
             Note = "Added inventory"
@@ -155,7 +166,7 @@ public class ApiEndpointsTests : IClassFixture<CustomWebApplicationFactory>
         Assert.Equal(10, stockInResult.Movement.Quantity);
 
         // Stock-out 4
-        var stockOutRes = await _client.PostAsJsonAsync($"/api/products/{product.Id}/stock-out", new StockAdjustmentRequest
+        var stockOutRes = await _adminClient.PostAsJsonAsync($"/api/products/{product.Id}/stock-out", new StockAdjustmentRequest
         {
             Quantity = 4,
             Note = "Shipped order"
@@ -167,7 +178,7 @@ public class ApiEndpointsTests : IClassFixture<CustomWebApplicationFactory>
         Assert.Equal(4, stockOutResult.Movement.Quantity);
 
         // Stock-out exceeding available balance (11) -> 409 Conflict
-        var excessStockOutRes = await _client.PostAsJsonAsync($"/api/products/{product.Id}/stock-out", new StockAdjustmentRequest
+        var excessStockOutRes = await _adminClient.PostAsJsonAsync($"/api/products/{product.Id}/stock-out", new StockAdjustmentRequest
         {
             Quantity = 20,
             Note = "Too many units"
@@ -178,7 +189,7 @@ public class ApiEndpointsTests : IClassFixture<CustomWebApplicationFactory>
         Assert.Equal(409, conflictProblem.Status);
 
         // Fetch movements history
-        var movementsRes = await _client.GetAsync($"/api/products/{product.Id}/movements");
+        var movementsRes = await _adminClient.GetAsync($"/api/products/{product.Id}/movements");
         Assert.Equal(HttpStatusCode.OK, movementsRes.StatusCode);
         var movements = await movementsRes.Content.ReadFromJsonAsync<PagedResponse<StockMovementResponse>>();
         Assert.NotNull(movements);
@@ -190,7 +201,7 @@ public class ApiEndpointsTests : IClassFixture<CustomWebApplicationFactory>
     public async Task DeleteProduct_WithExistingMovements_Returns409Conflict()
     {
         var sku = $"DEL-{Guid.NewGuid():N}"[..10];
-        var createRes = await _client.PostAsJsonAsync("/api/products", new CreateProductRequest
+        var createRes = await _adminClient.PostAsJsonAsync("/api/products", new CreateProductRequest
         {
             Name = "Preserved Item",
             SKU = sku,
@@ -200,7 +211,7 @@ public class ApiEndpointsTests : IClassFixture<CustomWebApplicationFactory>
         var product = await createRes.Content.ReadFromJsonAsync<ProductResponse>();
         Assert.NotNull(product);
 
-        var delRes = await _client.DeleteAsync($"/api/products/{product.Id}");
+        var delRes = await _adminClient.DeleteAsync($"/api/products/{product.Id}");
 
         Assert.Equal(HttpStatusCode.Conflict, delRes.StatusCode);
         var problem = await delRes.Content.ReadFromJsonAsync<ProblemDetails>();
@@ -213,7 +224,7 @@ public class ApiEndpointsTests : IClassFixture<CustomWebApplicationFactory>
     public async Task InventoryReports_LowStockAndSummary_ReturnAccurateData()
     {
         var skuLow = $"LS-{Guid.NewGuid():N}"[..8];
-        await _client.PostAsJsonAsync("/api/products", new CreateProductRequest
+        await _adminClient.PostAsJsonAsync("/api/products", new CreateProductRequest
         {
             Name = "Low Item",
             SKU = skuLow,
@@ -222,13 +233,13 @@ public class ApiEndpointsTests : IClassFixture<CustomWebApplicationFactory>
             LowStockThreshold = 5
         });
 
-        var lowStockRes = await _client.GetAsync("/api/inventory/low-stock");
+        var lowStockRes = await _adminClient.GetAsync("/api/inventory/low-stock");
         Assert.Equal(HttpStatusCode.OK, lowStockRes.StatusCode);
         var lowStockList = await lowStockRes.Content.ReadFromJsonAsync<List<ProductResponse>>();
         Assert.NotNull(lowStockList);
         Assert.Contains(lowStockList, p => p.SKU == skuLow.ToUpperInvariant());
 
-        var summaryRes = await _client.GetAsync("/api/inventory/summary");
+        var summaryRes = await _adminClient.GetAsync("/api/inventory/summary");
         Assert.Equal(HttpStatusCode.OK, summaryRes.StatusCode);
         var summary = await summaryRes.Content.ReadFromJsonAsync<InventorySummaryResponse>();
         Assert.NotNull(summary);
@@ -241,7 +252,7 @@ public class ApiEndpointsTests : IClassFixture<CustomWebApplicationFactory>
     [Fact]
     public async Task OpenApi_JsonEndpoint_Returns200WithApiDocument()
     {
-        var response = await _client.GetAsync("/openapi/v1.json");
+        var response = await _anonymousClient.GetAsync("/openapi/v1.json");
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         var json = await response.Content.ReadAsStringAsync();
         Assert.Contains("Stockroom", json, StringComparison.OrdinalIgnoreCase);

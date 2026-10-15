@@ -82,6 +82,21 @@ public class GlobalExceptionHandler : IExceptionHandler
                 "Concurrency Conflict",
                 "The requested resource was modified by a concurrent transaction. Please reload the latest data and retry."),
 
+            AuthenticationFailedException authFailed => (
+                StatusCodes.Status401Unauthorized,
+                "Authentication Failed",
+                authFailed.Message),
+
+            IdentityValidationException identityVal => (
+                StatusCodes.Status400BadRequest,
+                "Validation Error",
+                identityVal.Message),
+
+            RoleOperationException roleOp => (
+                StatusCodes.Status400BadRequest,
+                "Role Operation Error",
+                roleOp.Message),
+
             InvalidDomainDataException invalidData => (
                 StatusCodes.Status400BadRequest,
                 "Validation Error",

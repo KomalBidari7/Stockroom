@@ -1,13 +1,16 @@
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Stockroom.Application.DTOs.Common;
 using Stockroom.Application.DTOs.Products;
 using Stockroom.Application.DTOs.StockMovements;
 using Stockroom.Application.Interfaces;
+using Stockroom.Domain.Common;
 
 namespace Stockroom.API.Controllers;
 
 [ApiController]
 [Route("api/[controller]")]
+[Authorize]
 [Produces("application/json")]
 public class ProductsController : ControllerBase
 {
@@ -23,11 +26,15 @@ public class ProductsController : ControllerBase
     }
 
     /// <summary>
-    /// Creates a new product. If initialQuantity > 0, an initial StockIn movement is atomically recorded.
+    /// Creates a new product. Accessible to Admin and InventoryManager roles.
+    /// If initialQuantity > 0, an initial StockIn movement is atomically recorded.
     /// </summary>
     [HttpPost]
+    [Authorize(Roles = $"{Roles.Admin},{Roles.InventoryManager}")]
     [ProducesResponseType(typeof(ProductResponse), StatusCodes.Status201Created)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status409Conflict)]
     public async Task<ActionResult<ProductResponse>> Create(
         [FromBody] CreateProductRequest request,
@@ -39,10 +46,14 @@ public class ProductsController : ControllerBase
 
     /// <summary>
     /// Retrieves a paginated list of products with optional search and low-stock filtering.
+    /// Accessible to Viewer, InventoryManager, and Admin roles.
     /// </summary>
     [HttpGet]
+    [Authorize(Roles = $"{Roles.Admin},{Roles.InventoryManager},{Roles.Viewer}")]
     [ProducesResponseType(typeof(PagedResponse<ProductResponse>), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
     public async Task<ActionResult<PagedResponse<ProductResponse>>> GetAll(
         [FromQuery] int page = 1,
         [FromQuery] int pageSize = 10,
@@ -77,10 +88,13 @@ public class ProductsController : ControllerBase
     }
 
     /// <summary>
-    /// Retrieves a specific product by its ID.
+    /// Retrieves a specific product by its ID. Accessible to Viewer, InventoryManager, and Admin roles.
     /// </summary>
     [HttpGet("{id:int}")]
+    [Authorize(Roles = $"{Roles.Admin},{Roles.InventoryManager},{Roles.Viewer}")]
     [ProducesResponseType(typeof(ProductResponse), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
     public async Task<ActionResult<ProductResponse>> GetById(
         int id,
@@ -103,11 +117,14 @@ public class ProductsController : ControllerBase
 
     /// <summary>
     /// Updates product metadata (name, SKU, description, unit price, low-stock threshold).
-    /// Does not alter quantity in stock.
+    /// Does not alter quantity in stock. Accessible to Admin and InventoryManager roles.
     /// </summary>
     [HttpPut("{id:int}")]
+    [Authorize(Roles = $"{Roles.Admin},{Roles.InventoryManager}")]
     [ProducesResponseType(typeof(ProductResponse), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status409Conflict)]
     public async Task<ActionResult<ProductResponse>> Update(
@@ -121,9 +138,13 @@ public class ProductsController : ControllerBase
 
     /// <summary>
     /// Deletes a product only if it has zero stock balance and no historical stock movement audit records.
+    /// Accessible only to Admin role.
     /// </summary>
     [HttpDelete("{id:int}")]
+    [Authorize(Roles = Roles.Admin)]
     [ProducesResponseType(StatusCodes.Status204NoContent)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status409Conflict)]
     public async Task<IActionResult> Delete(
@@ -136,10 +157,14 @@ public class ProductsController : ControllerBase
 
     /// <summary>
     /// Adjusts stock upward (StockIn) and atomically records an immutable movement audit log.
+    /// Accessible to Admin and InventoryManager roles.
     /// </summary>
     [HttpPost("{id:int}/stock-in")]
+    [Authorize(Roles = $"{Roles.Admin},{Roles.InventoryManager}")]
     [ProducesResponseType(typeof(StockAdjustmentResult), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status409Conflict)]
     public async Task<ActionResult<StockAdjustmentResult>> StockIn(
@@ -153,10 +178,14 @@ public class ProductsController : ControllerBase
 
     /// <summary>
     /// Adjusts stock downward (StockOut) and atomically records an immutable movement audit log.
+    /// Accessible to Admin and InventoryManager roles.
     /// </summary>
     [HttpPost("{id:int}/stock-out")]
+    [Authorize(Roles = $"{Roles.Admin},{Roles.InventoryManager}")]
     [ProducesResponseType(typeof(StockAdjustmentResult), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status409Conflict)]
     public async Task<ActionResult<StockAdjustmentResult>> StockOut(
@@ -170,10 +199,14 @@ public class ProductsController : ControllerBase
 
     /// <summary>
     /// Retrieves paginated stock movement audit history for the specified product, newest first.
+    /// Accessible to Viewer, InventoryManager, and Admin roles.
     /// </summary>
     [HttpGet("{id:int}/movements")]
+    [Authorize(Roles = $"{Roles.Admin},{Roles.InventoryManager},{Roles.Viewer}")]
     [ProducesResponseType(typeof(PagedResponse<StockMovementResponse>), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
     public async Task<ActionResult<PagedResponse<StockMovementResponse>>> GetMovements(
         int id,

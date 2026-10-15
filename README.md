@@ -1,6 +1,6 @@
 # Stockroom — Inventory Management REST API
 
-Stockroom is a production-grade, lightweight Inventory Management REST API built with **C#** and **ASP.NET Core** following the principles of **Clean Architecture**. It provides end-to-end inventory tracking, stock movements audit logging, low-stock threshold alerting, and real-time inventory valuation.
+Stockroom is a production-grade, lightweight Inventory Management REST API built with **C#** and **ASP.NET Core** following the principles of **Clean Architecture**. It features **JWT Bearer Authentication**, **Role-Based Access Control (RBAC)**, end-to-end inventory tracking, stock movements audit logging, low-stock threshold alerting, and real-time inventory valuation.
 
 ---
 
@@ -10,11 +10,18 @@ Stockroom is a production-grade, lightweight Inventory Management REST API built
 - [Key Features](#key-features)
 - [Architecture & Design](#architecture--design)
 - [Technology Stack](#technology-stack)
+- [Security & Authentication Architecture](#security--authentication-architecture)
+  - [Role-Based Access Control (RBAC) Matrix](#role-based-access-control-rbac-matrix)
+  - [Initial Administrator Provisioning](#initial-administrator-provisioning)
+  - [JWT Configuration & Key Management](#jwt-configuration--key-management)
+  - [API Hardening & Rate Limiting](#api-hardening--rate-limiting)
 - [Project Structure](#project-structure)
 - [Prerequisites](#prerequisites)
 - [Getting Started](#getting-started)
 - [Database Migrations](#database-migrations)
 - [API Endpoints & Documentation](#api-endpoints--documentation)
+  - [Authentication](#authentication)
+  - [User & Role Administration](#user--role-administration)
   - [Products](#products)
   - [Stock Operations & Audit History](#stock-operations--audit-history)
   - [Inventory Reporting](#inventory-reporting)
@@ -28,29 +35,37 @@ Stockroom is a production-grade, lightweight Inventory Management REST API built
 
 ## Overview & Problem Solved
 
-Traditional inventory systems frequently suffer from data anomalies:
-1. **Silent stock discrepancies**: Balance numbers changed directly without an audit trail of who or what changed them.
+Traditional inventory systems frequently suffer from data anomalies and unauthorized tampering:
+1. **Uncontrolled stock tampering**: Direct balance adjustments without audit trails or role verification.
 2. **Negative inventory**: Overselling or removing more units than actually exist in the warehouse.
 3. **Audit trail deletion**: Deleting catalog items that destroy historic financial ledger records.
 4. **Floating-point rounding errors**: Precision loss when aggregating stock values.
+5. **Credential vulnerabilities**: Hardcoded secrets, plaintext passwords, or vulnerable auth schemes.
 
 **Stockroom solves these problems** by:
+- Enforcing **secure JWT bearer authentication** with ASP.NET Core Identity (PBKDF2 password hashing).
+- Defining a strict **3-tier RBAC permission model** (`Admin`, `InventoryManager`, `Viewer`).
 - Enforcing **domain-level business invariants** (non-negative stock, positive adjustment quantities).
 - Guaranteeing **atomic persistence**: product balance changes and immutable audit movements either persist together or fail together.
 - Recording an **immutable audit log** for every stock-in and stock-out event (including initial balances upon product creation).
-- Prohibiting accidental deletion of products that have historic movement history or active stock.
+- Prohibiting deletion of products that have historic movement history or active stock.
+- Implementing **partitioned brute-force rate limiting** and **HTTP security defense headers**.
 - Performing **safe decimal arithmetic** for financial valuations.
 
 ---
 
 ## Key Features
 
+- **JWT Authentication**: Secure stateless authentication using HMAC-SHA256 signed JWT tokens with configurable expiration.
+- **Role-Based Access Control (RBAC)**: Fine-grained authorization policies guarding every inventory and management endpoint.
 - **Product Catalog Management**: Create, view, update, and search products with unique SKU enforcement, pagination, and filtering.
 - **Atomic Stock Adjustments**: Dedicated `/stock-in` and `/stock-out` endpoints that guarantee balance updates and audit trail persistence inside database transactions.
 - **Immutable Movement Audit Records**: Chronological, read-only ledger capturing before/after balances, quantities, timestamps (UTC), and optional transaction notes.
+- **User & Role Administration**: Admin-only APIs to inspect users and assign roles, with safety guards preventing accidental removal of the last administrator.
+- **Brute-Force Rate Limiting**: Client-partitioned rate limiting on authentication endpoints returning HTTP `429 Too Many Requests`.
 - **Low-Stock Alerting**: Instant detection of products needing replenishment (`QuantityInStock <= LowStockThreshold`). Products configured with a threshold of `0` are intentionally excluded from alerts.
 - **Inventory Valuation & Metrics**: High-level reporting of total catalog items, total units on hand, low-stock item count, and cumulative inventory value calculated in memory using exact decimal arithmetic.
-- **RFC 9110 / RFC 7807 Compliance**: Centralized error handling returning standardized `ProblemDetails` for 400 Bad Request, 404 Not Found, 409 Conflict, and 500 Internal Server Error without leaking internal stack traces.
+- **RFC 9110 / RFC 7807 Compliance**: Centralized error handling returning standardized `ProblemDetails` for 400 Bad Request, 401 Unauthorized, 403 Forbidden, 404 Not Found, 409 Conflict, and 500 Internal Server Error without leaking internal stack traces.
 - **Interactive Developer UI**: Integrated **Scalar** interactive API documentation alongside OpenAPI specifications.
 
 ---
@@ -61,11 +76,11 @@ Stockroom follows **Clean Architecture** (Ports and Adapters / Onion Architectur
 
 ```mermaid
 graph TD
-    API["Stockroom.API\n(Presentation, Controllers, Middleware)"]
+    API["Stockroom.API\n(Presentation, Controllers, Middleware, Auth/RateLimiter)"]
     APP["Stockroom.Application\n(Use Cases, DTOs, Service Interfaces)"]
-    INFRA["Stockroom.Infrastructure\n(EF Core, SQLite, Repositories)"]
-    DOM["Stockroom.Domain\n(Entities, Enums, Exceptions, Invariants)"]
-    TESTS["Stockroom.Tests\n(xUnit, Integration & Unit Tests)"]
+    INFRA["Stockroom.Infrastructure\n(EF Core, SQLite, Identity, JWT Generator, Repositories)"]
+    DOM["Stockroom.Domain\n(Entities, Enums, Exceptions, Invariants, Roles)"]
+    TESTS["Stockroom.Tests\n(xUnit, Integration, Auth/RBAC, & Unit Tests)"]
 
     API --> APP
     API --> INFRA
@@ -79,14 +94,92 @@ graph TD
 ```
 
 ### Dependency Rules:
-1. **Stockroom.Domain**: Contains core business entities (`Product`, `StockMovement`), domain exceptions, and domain logic. Has zero external dependencies (no EF Core, no HTTP, no external frameworks).
-2. **Stockroom.Application**: Defines repository abstractions (`IProductRepository`, `IStockMovementRepository`, `IUnitOfWork`), application service interfaces, request/response DTOs, and orchestrates use cases. Depends only on Domain.
-3. **Stockroom.Infrastructure**: Implements persistence using Entity Framework Core and SQLite, defines database mappings, runs migrations, and handles database transactions. Depends on Application and Domain.
-4. **Stockroom.API**: Presentation layer containing ASP.NET Core controllers (`ProductsController`, `InventoryController`), OpenAPI / Scalar configuration, and centralized `GlobalExceptionHandler`. Acts as the composition root.
-5. **Stockroom.Tests**: Unit and integration tests validating domain rules, application services, and full HTTP endpoints via `WebApplicationFactory`.
+1. **Stockroom.Domain**: Contains core business entities (`Product`, `StockMovement`), domain exceptions, role constants (`Roles.Admin`, `Roles.InventoryManager`, `Roles.Viewer`), and domain logic. Has zero external dependencies.
+2. **Stockroom.Application**: Defines repository abstractions (`IProductRepository`, `IStockMovementRepository`, `IUnitOfWork`), authentication/admin service interfaces (`IAuthService`, `IUserAdminService`), request/response DTOs, and orchestrates use cases. Depends only on Domain.
+3. **Stockroom.Infrastructure**: Implements persistence using Entity Framework Core and SQLite, configures ASP.NET Core Identity (`ApplicationUser : IdentityUser`), generates JWT tokens, runs migrations, and handles database transactions. Depends on Application and Domain.
+4. **Stockroom.API**: Presentation layer containing ASP.NET Core controllers (`AuthController`, `AdminController`, `ProductsController`, `InventoryController`), JWT Bearer authentication, authorization policies, rate limiting, OpenAPI / Scalar configuration, and centralized `GlobalExceptionHandler`. Acts as the composition root.
+5. **Stockroom.Tests**: Unit and integration tests validating domain rules, application services, auth flows, RBAC policies, and full HTTP endpoints via `WebApplicationFactory`.
 
-> [!NOTE]
-> In alignment with clean design principles, this project intentionally avoids unnecessary abstractions such as MediatR, CQRS frameworks, event sourcing, or microservices libraries, keeping the codebase simple, explicit, and easy to maintain.
+---
+
+## Security & Authentication Architecture
+
+### Role-Based Access Control (RBAC) Matrix
+
+| Endpoint | Verb | Anonymous | Viewer | InventoryManager | Admin |
+|---|---|:---:|:---:|:---:|:---:|
+| `/api/auth/register` | `POST` | ✅ | ✅ | ✅ | ✅ |
+| `/api/auth/login` | `POST` | ✅ | ✅ | ✅ | ✅ |
+| `/api/auth/me` | `GET` | ❌ (401) | ✅ | ✅ | ✅ |
+| `/api/admin/users` | `GET` | ❌ (401) | ❌ (403) | ❌ (403) | ✅ |
+| `/api/admin/users/{id}` | `GET` | ❌ (401) | ❌ (403) | ❌ (403) | ✅ |
+| `/api/admin/users/{id}/roles` | `PUT` | ❌ (401) | ❌ (403) | ❌ (403) | ✅ |
+| `/api/products` | `GET` | ❌ (401) | ✅ | ✅ | ✅ |
+| `/api/products/{id}` | `GET` | ❌ (401) | ✅ | ✅ | ✅ |
+| `/api/products/{id}/movements` | `GET` | ❌ (401) | ✅ | ✅ | ✅ |
+| `/api/inventory/low-stock` | `GET` | ❌ (401) | ✅ | ✅ | ✅ |
+| `/api/inventory/summary` | `GET` | ❌ (401) | ✅ | ✅ | ✅ |
+| `/api/products` | `POST` | ❌ (401) | ❌ (403) | ✅ | ✅ |
+| `/api/products/{id}` | `PUT` | ❌ (401) | ❌ (403) | ✅ | ✅ |
+| `/api/products/{id}/stock-in` | `POST` | ❌ (401) | ❌ (403) | ✅ | ✅ |
+| `/api/products/{id}/stock-out` | `POST` | ❌ (401) | ❌ (403) | ✅ | ✅ |
+| `/api/products/{id}` | `DELETE` | ❌ (401) | ❌ (403) | ❌ (403) | ✅ |
+
+### Initial Administrator Provisioning
+
+To prevent insecure privilege escalation, public registration requests (`POST /api/auth/register`) **never accept client-supplied roles** and assign the `Viewer` role by default.
+
+The initial administrator is provisioned safely and idempotently on startup from configuration:
+- In `appsettings.Development.json` (for local development):
+  ```json
+  "InitialAdmin": {
+    "Email": "admin@stockroom.local",
+    "Password": "AdminPassword123!"
+  }
+  ```
+- In production, set environment variables:
+  ```bash
+  export InitialAdmin__Email="admin@yourdomain.com"
+  export InitialAdmin__Password="YourStrongAdminPassword123!"
+  ```
+The startup seeder checks if an account with this email exists; if not, it provisions the administrator with `Admin`, `InventoryManager`, and `Viewer` roles. If it already exists, the seeder does **not** overwrite passwords or alter existing privileges.
+
+### JWT Configuration & Key Management
+
+JWT configuration is managed under the `Jwt` section:
+```json
+"Jwt": {
+  "Issuer": "StockroomAPI",
+  "Audience": "StockroomClients",
+  "SecretKey": "",
+  "ExpirationMinutes": 60
+}
+```
+
+> [!CAUTION]
+> The application enforces **fail-safe startup validation**: if `Jwt:SecretKey` is missing or shorter than 32 characters (256 bits), the API **refuses to start**, preventing silent fallbacks to insecure keys.
+
+#### Setting the Secret Key:
+- **Local Development**: Configure via .NET User Secrets:
+  ```bash
+  cd src/Stockroom.API
+  dotnet user-secrets set "Jwt:SecretKey" "Your32ByteOrLongerSecureSigningSecretKeyHere!"
+  ```
+- **Deployed Environments**: Set the environment variable:
+  ```bash
+  export Jwt__SecretKey="YourProduction32ByteOrLongerCryptographicKey!"
+  ```
+
+### API Hardening & Rate Limiting
+
+1. **Brute-Force Resistance**: Authentication endpoints (`/api/auth/login` and `/api/auth/register`) are protected with partitioned fixed-window rate limiting. Clients exceeding 100 requests per minute receive HTTP `429 Too Many Requests`.
+2. **Security Headers**: Standard defense-in-depth headers are injected on all HTTP responses:
+   - `X-Content-Type-Options: nosniff`
+   - `X-Frame-Options: DENY`
+   - `Referrer-Policy: strict-origin-when-cross-origin`
+   - `X-XSS-Protection: 0`
+3. **No User Enumeration**: Login requests with incorrect emails or passwords return an identical generic error message (`Invalid email or password.`) with HTTP 401.
+4. **Mass Assignment Protection**: Endpoints accept explicit DTO records; domain entities and Identity models are never bound directly to HTTP request bodies.
 
 ---
 
@@ -94,6 +187,9 @@ graph TD
 
 - **Platform / SDK**: .NET 10 (C# 13)
 - **Framework**: ASP.NET Core Web API with Controllers
+- **Security & Identity**: ASP.NET Core Identity Core (`Microsoft.AspNetCore.Identity.EntityFrameworkCore`)
+- **JWT Authentication**: `Microsoft.AspNetCore.Authentication.JwtBearer` (HMAC-SHA256)
+- **Rate Limiting**: Built-in ASP.NET Core Rate Limiting Middleware
 - **ORM**: Entity Framework Core 10 (`Microsoft.EntityFrameworkCore.Sqlite`)
 - **Database**: SQLite (local file-based storage with transactional support)
 - **API Documentation**: Microsoft OpenAPI (`Microsoft.AspNetCore.OpenApi`) + **Scalar** (`Scalar.AspNetCore`)
@@ -108,25 +204,29 @@ Stockroom/
 ├── Stockroom.sln                                # Visual Studio solution
 ├── Stockroom.slnx                               # Modern XML solution
 ├── dotnet-tools.json                            # Local .NET CLI tool manifest (dotnet-ef)
-├── .gitignore                                   # Git ignore rules
+├── .gitignore                                   # Git ignore rules (secrets, databases, build artifacts)
 ├── README.md                                    # Documentation
 ├── src/
 │   ├── Stockroom.Domain/                        # Domain Layer (Enterprise Core)
+│   │   ├── Common/
+│   │   │   └── Roles.cs                         # Role constants (Admin, InventoryManager, Viewer) & Policies
 │   │   ├── Entities/
 │   │   │   ├── Product.cs                       # Product aggregate & business invariants
 │   │   │   └── StockMovement.cs                 # Immutable audit movement entity
 │   │   ├── Enums/
 │   │   │   └── StockMovementType.cs             # StockIn, StockOut
 │   │   └── Exceptions/
-│   │       └── DomainExceptions.cs              # Domain-specific business exceptions
+│   │       └── DomainExceptions.cs              # Domain-specific business & security exceptions
 │   │
 │   ├── Stockroom.Application/                   # Application Layer (Use Cases)
 │   │   ├── DTOs/
+│   │   │   ├── Auth/AuthDTOs.cs                 # Register, Login, CurrentUser, Admin DTOs
 │   │   │   ├── Common/PagedResponse.cs          # Generic pagination wrapper
 │   │   │   ├── Products/ProductDTOs.cs          # Create/Update/Query Product DTOs
 │   │   │   ├── StockMovements/StockMovementDTOs.cs # StockIn/StockOut request/response DTOs
 │   │   │   └── Inventory/InventoryDTOs.cs       # Inventory summary DTOs
 │   │   ├── Interfaces/
+│   │   │   ├── IAuthService.cs                  # Auth & User admin service interfaces
 │   │   │   ├── IProductRepository.cs
 │   │   │   ├── IStockMovementRepository.cs
 │   │   │   ├── IUnitOfWork.cs
@@ -138,26 +238,37 @@ Stockroom/
 │   │   └── DependencyInjection.cs
 │   │
 │   ├── Stockroom.Infrastructure/                # Infrastructure Layer (Data & Persistence)
+│   │   ├── Authentication/
+│   │   │   ├── JwtOptions.cs                    # Configurable JWT model
+│   │   │   └── JwtTokenGenerator.cs             # HMAC-SHA256 token generator
 │   │   ├── Data/
-│   │   │   ├── StockroomDbContext.cs            # EF Core DbContext
+│   │   │   ├── StockroomDbContext.cs            # IdentityDbContext<ApplicationUser>
 │   │   │   ├── StockroomDbContextFactory.cs     # Design-time factory for EF CLI
 │   │   │   ├── UnitOfWork.cs                    # Transaction & save changes coordinator
-│   │   │   ├── Configurations/
-│   │   │   │   ├── ProductConfiguration.cs      # EF mappings, indexes, constraints
-│   │   │   │   └── StockMovementConfiguration.cs# Audit log configuration & composite indexes
+│   │   │   ├── Configurations/                  # EF entity mappings
 │   │   │   └── Migrations/                      # EF Core SQLite schema migrations
+│   │   ├── Identity/
+│   │   │   ├── ApplicationUser.cs               # IdentityUser extension
+│   │   │   └── IdentitySeeder.cs                # Idempotent role & initial admin seeder
 │   │   ├── Repositories/
 │   │   │   ├── ProductRepository.cs
 │   │   │   └── StockMovementRepository.cs
+│   │   ├── Services/
+│   │   │   ├── AuthService.cs                   # Identity registration & login implementation
+│   │   │   └── UserAdminService.cs              # Role & user management implementation
 │   │   └── DependencyInjection.cs
 │   │
 │   └── Stockroom.API/                           # Presentation Layer (API Host)
 │       ├── Controllers/
+│       │   ├── AuthController.cs                # Register, Login, Me endpoints
+│       │   ├── AdminController.cs               # Admin user & role management endpoints
 │       │   ├── ProductsController.cs            # Product & stock management endpoints
 │       │   └── InventoryController.cs           # Low-stock & summary reporting endpoints
 │       ├── Middleware/
-│       │   └── GlobalExceptionHandler.cs        # Centralized RFC 9110 ProblemDetails handler
+│       │   ├── GlobalExceptionHandler.cs        # Centralized RFC 9110 ProblemDetails handler
+│       │   └── SecurityHeadersMiddleware.cs     # Defense-in-depth HTTP headers
 │       ├── Program.cs                           # Composition root & middleware pipeline
+│       ├── Stockroom.API.http                   # Interactive HTTP test requests
 │       ├── appsettings.json
 │       └── appsettings.Development.json
 │
@@ -170,7 +281,8 @@ Stockroom/
         │   ├── ProductServiceTests.cs           # Use case & business logic tests
         │   └── InventoryServiceTests.cs         # Stock adjustment & report tests
         ├── Integration/
-        │   ├── CustomWebApplicationFactory.cs   # In-memory test host setup
+        │   ├── CustomWebApplicationFactory.cs   # In-memory test host setup with JWT helpers
+        │   ├── AuthAndRbacTests.cs              # Authentication, JWT, and RBAC tests
         │   └── ApiEndpointsTests.cs             # Full E2E HTTP integration tests
         └── TestHelpers/
             └── SqliteTestDatabase.cs            # Isolated SQLite in-memory helper
@@ -180,7 +292,7 @@ Stockroom/
 
 ## Prerequisites
 
-- [.NET 10 SDK](https://dotnet.microsoft.com/download) (or .NET 9 if targeting compatible framework)
+- [.NET 10 SDK](https://dotnet.microsoft.com/download)
 - Terminal / CLI (macOS, Linux, or Windows)
 
 Verify your installed SDK version:
@@ -214,20 +326,27 @@ dotnet build Stockroom.sln
 dotnet run --project src/Stockroom.API
 ```
 
-The application will automatically initialize the local SQLite database (`stockroom.db`) and apply pending migrations on startup.
+The application will automatically apply database migrations and seed the initial roles and administrator account (`admin@stockroom.local` / `AdminPassword123!`).
 
 ### 5. Access Interactive API Documentation
 Open your browser to:
-- **Scalar UI**: `http://localhost:5000/scalar/v1` (or HTTPS port shown in console)
-- **OpenAPI Document**: `http://localhost:5000/openapi/v1.json`
+- **Scalar UI**: `http://localhost:5008/scalar/v1` (or URL displayed in console)
+- **OpenAPI Document**: `http://localhost:5008/openapi/v1.json`
 
 ---
 
 ## Database Migrations
 
-Entity Framework Core migrations are located in `Stockroom.Infrastructure/Data/Migrations`.
+Entity Framework Core migrations manage both inventory tables and ASP.NET Core Identity tables.
 
-To add a new migration:
+To apply migrations manually:
+```bash
+dotnet dotnet-ef database update \
+  --project src/Stockroom.Infrastructure \
+  --startup-project src/Stockroom.Infrastructure
+```
+
+To create a new migration:
 ```bash
 dotnet dotnet-ef migrations add <MigrationName> \
   --project src/Stockroom.Infrastructure \
@@ -235,26 +354,118 @@ dotnet dotnet-ef migrations add <MigrationName> \
   --output-dir Data/Migrations
 ```
 
-To manually apply migrations to the database:
-```bash
-dotnet dotnet-ef database update \
-  --project src/Stockroom.Infrastructure \
-  --startup-project src/Stockroom.Infrastructure
-```
-
 ---
 
 ## API Endpoints & Documentation
 
-All error responses use the standard `application/problem+json` (`ProblemDetails`) schema.
+All protected endpoints require the following header:
+```http
+Authorization: Bearer <your-jwt-token>
+```
+
+### Authentication
+
+#### 1. Register
+- **Method**: `POST`
+- **Route**: `/api/auth/register`
+- **Anonymous**: Allowed (Rate limited)
+- **Description**: Registers a new user. The user is assigned the `Viewer` role by default.
+
+**Request Body**:
+```json
+{
+  "email": "warehouse.staff@stockroom.local",
+  "password": "SecurePassword123!"
+}
+```
+
+**Response (200 OK)**:
+```json
+{
+  "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6...",
+  "tokenType": "Bearer",
+  "expiresAtUtc": "2026-10-15T14:30:00Z",
+  "userId": "b4c19ef0-0321-4f10-b98a-77e8dbd92831",
+  "email": "warehouse.staff@stockroom.local",
+  "roles": ["Viewer"]
+}
+```
+
+---
+
+#### 2. Login
+- **Method**: `POST`
+- **Route**: `/api/auth/login`
+- **Anonymous**: Allowed (Rate limited)
+- **Description**: Validates credentials and returns a signed JWT access token.
+
+**Request Body**:
+```json
+{
+  "email": "admin@stockroom.local",
+  "password": "AdminPassword123!"
+}
+```
+
+**Response (200 OK)**:
+```json
+{
+  "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6...",
+  "tokenType": "Bearer",
+  "expiresAtUtc": "2026-10-15T14:30:00Z",
+  "userId": "d748f34b-2b4a-4422-b516-7782631cf547",
+  "email": "admin@stockroom.local",
+  "roles": ["Admin", "InventoryManager", "Viewer"]
+}
+```
+
+---
+
+#### 3. Current User Profile
+- **Method**: `GET`
+- **Route**: `/api/auth/me`
+- **Authorization**: Required (`Viewer`, `InventoryManager`, or `Admin`)
+- **Description**: Returns the authenticated user's profile and assigned roles without exposing sensitive fields.
+
+---
+
+### User & Role Administration
+
+*All administration endpoints require the `Admin` role.*
+
+#### 1. List Users
+- **Method**: `GET`
+- **Route**: `/api/admin/users`
+- **Authorization**: `Admin` only
+- **Response**: List of users with their IDs, emails, and assigned roles.
+
+#### 2. Get User by ID
+- **Method**: `GET`
+- **Route**: `/api/admin/users/{id}`
+- **Authorization**: `Admin` only
+
+#### 3. Update User Roles
+- **Method**: `PUT`
+- **Route**: `/api/admin/users/{id}/roles`
+- **Authorization**: `Admin` only
+- **Description**: Replaces the user's roles with the specified list. Validates role names and prevents removing the `Admin` role from the last active administrator.
+
+**Request Body**:
+```json
+{
+  "roles": ["InventoryManager"]
+}
+```
+
+---
 
 ### Products
 
 #### 1. Create Product
 - **Method**: `POST`
 - **Route**: `/api/products`
-- **Status**: `201 Created` (with `Location` header)
-- **Description**: Creates a new product. If `initialQuantity > 0`, an initial `StockIn` movement is atomically recorded so the audit history aligns with starting stock.
+- **Authorization**: `Admin` or `InventoryManager`
+- **Description**: Creates a new product. If `initialQuantity > 0`, an initial `StockIn` movement is atomically recorded.
 
 **Request Body**:
 ```json
@@ -268,102 +479,35 @@ All error responses use the standard `application/problem+json` (`ProblemDetails
 }
 ```
 
-**Response (201 Created)**:
-```json
-{
-  "id": 1,
-  "name": "Mechanical Keyboard Pro",
-  "sku": "KB-MECH-01",
-  "description": "Tenkeyless mechanical keyboard with hot-swappable switches",
-  "unitPrice": 129.99,
-  "quantityInStock": 25,
-  "lowStockThreshold": 5,
-  "isLowStock": false,
-  "createdAtUtc": "2026-10-15T13:21:40Z",
-  "updatedAtUtc": "2026-10-15T13:21:40Z"
-}
-```
-
 ---
 
 #### 2. List Products
 - **Method**: `GET`
 - **Route**: `/api/products?page=1&pageSize=10&search=keyboard&lowStockOnly=false`
-- **Status**: `200 OK`
-- **Query Parameters**:
-  - `page` *(optional, default: 1)*: Page number (>= 1).
-  - `pageSize` *(optional, default: 10, max: 100)*: Items per page.
-  - `search` *(optional)*: Case-insensitive search on `name` or `SKU`.
-  - `lowStockOnly` *(optional)*: Filter products where `QuantityInStock <= LowStockThreshold`.
-
-**Response (200 OK)**:
-```json
-{
-  "items": [
-    {
-      "id": 1,
-      "name": "Mechanical Keyboard Pro",
-      "sku": "KB-MECH-01",
-      "description": "Tenkeyless mechanical keyboard with hot-swappable switches",
-      "unitPrice": 129.99,
-      "quantityInStock": 25,
-      "lowStockThreshold": 5,
-      "isLowStock": false,
-      "createdAtUtc": "2026-10-15T13:21:40Z",
-      "updatedAtUtc": "2026-10-15T13:21:40Z"
-    }
-  ],
-  "page": 1,
-  "pageSize": 10,
-  "totalCount": 1,
-  "totalPages": 1
-}
-```
+- **Authorization**: `Viewer`, `InventoryManager`, or `Admin`
 
 ---
 
 #### 3. Get Product by ID
 - **Method**: `GET`
 - **Route**: `/api/products/{id}`
-- **Status**: `200 OK` or `404 Not Found`
+- **Authorization**: `Viewer`, `InventoryManager`, or `Admin`
 
 ---
 
 #### 4. Update Product Metadata
 - **Method**: `PUT`
 - **Route**: `/api/products/{id}`
-- **Status**: `200 OK`, `400 Bad Request`, `404 Not Found`, `409 Conflict`
-- **Description**: Updates product details (name, SKU, description, unit price, low-stock threshold). **Does not alter inventory balance**; all balance adjustments must proceed through stock operations.
-
-**Request Body**:
-```json
-{
-  "name": "Mechanical Keyboard Pro (V2)",
-  "sku": "KB-MECH-02",
-  "description": "Updated model with sound-dampening foam",
-  "unitPrice": 139.99,
-  "lowStockThreshold": 8
-}
-```
+- **Authorization**: `Admin` or `InventoryManager`
+- **Description**: Updates product details (name, SKU, description, unit price, low-stock threshold). **Does not alter inventory balance**.
 
 ---
 
 #### 5. Delete Product
 - **Method**: `DELETE`
 - **Route**: `/api/products/{id}`
-- **Status**: `204 NoContent`, `404 Not Found`, `409 Conflict`
+- **Authorization**: `Admin` only
 - **Rule**: Deletion is prohibited and returns `409 Conflict` if the product has existing stock movement audit records (to preserve ledger integrity) or if the product has a remaining stock balance > 0.
-
-**Response on Conflict (409 Conflict)**:
-```json
-{
-  "type": "https://tools.ietf.org/html/rfc9110#section-15.5.10",
-  "title": "Operation Prohibited",
-  "status": 409,
-  "detail": "Cannot delete product 'Mechanical Keyboard Pro' (ID: 1, SKU: KB-MECH-01) because historical stock movement audit records exist. Deleting this product would destroy inventory audit integrity.",
-  "instance": "/api/products/1"
-}
-```
 
 ---
 
@@ -372,7 +516,7 @@ All error responses use the standard `application/problem+json` (`ProblemDetails
 #### 1. Receive Stock (Stock-In)
 - **Method**: `POST`
 - **Route**: `/api/products/{id}/stock-in`
-- **Status**: `200 OK`, `400 Bad Request`, `404 Not Found`
+- **Authorization**: `Admin` or `InventoryManager`
 - **Description**: Atomically increments stock balance and records a `StockIn` movement audit log.
 
 **Request Body**:
@@ -383,39 +527,12 @@ All error responses use the standard `application/problem+json` (`ProblemDetails
 }
 ```
 
-**Response (200 OK)**:
-```json
-{
-  "product": {
-    "id": 1,
-    "name": "Mechanical Keyboard Pro",
-    "sku": "KB-MECH-01",
-    "quantityInStock": 35,
-    "lowStockThreshold": 5,
-    "unitPrice": 129.99,
-    "isLowStock": false,
-    "createdAtUtc": "2026-10-15T13:21:40Z",
-    "updatedAtUtc": "2026-10-15T13:25:10Z"
-  },
-  "movement": {
-    "id": 2,
-    "productId": 1,
-    "movementType": "StockIn",
-    "quantity": 10,
-    "quantityBefore": 25,
-    "quantityAfter": 35,
-    "note": "Received supplier shipment PO #8821",
-    "createdAtUtc": "2026-10-15T13:25:10Z"
-  }
-}
-```
-
 ---
 
 #### 2. Remove Stock (Stock-Out)
 - **Method**: `POST`
 - **Route**: `/api/products/{id}/stock-out`
-- **Status**: `200 OK`, `400 Bad Request`, `404 Not Found`, `409 Conflict`
+- **Authorization**: `Admin` or `InventoryManager`
 - **Description**: Atomically decrements stock balance and records a `StockOut` movement audit log. Fails with `409 Conflict` if requested quantity exceeds available stock.
 
 **Request Body**:
@@ -426,82 +543,13 @@ All error responses use the standard `application/problem+json` (`ProblemDetails
 }
 ```
 
-**Response (200 OK)**:
-```json
-{
-  "product": {
-    "id": 1,
-    "name": "Mechanical Keyboard Pro",
-    "sku": "KB-MECH-01",
-    "quantityInStock": 30,
-    "lowStockThreshold": 5,
-    "unitPrice": 129.99,
-    "isLowStock": false,
-    "createdAtUtc": "2026-10-15T13:21:40Z",
-    "updatedAtUtc": "2026-10-15T13:27:00Z"
-  },
-  "movement": {
-    "id": 3,
-    "productId": 1,
-    "movementType": "StockOut",
-    "quantity": 5,
-    "quantityBefore": 35,
-    "quantityAfter": 30,
-    "note": "Dispatched order #SO-9910",
-    "createdAtUtc": "2026-10-15T13:27:00Z"
-  }
-}
-```
-
 ---
 
 #### 3. View Movement History
 - **Method**: `GET`
 - **Route**: `/api/products/{id}/movements?page=1&pageSize=10`
-- **Status**: `200 OK`, `404 Not Found`
+- **Authorization**: `Viewer`, `InventoryManager`, or `Admin`
 - **Description**: Returns immutable audit movements for the product, sorted newest first.
-
-**Response (200 OK)**:
-```json
-{
-  "items": [
-    {
-      "id": 3,
-      "productId": 1,
-      "movementType": "StockOut",
-      "quantity": 5,
-      "quantityBefore": 35,
-      "quantityAfter": 30,
-      "note": "Dispatched order #SO-9910",
-      "createdAtUtc": "2026-10-15T13:27:00Z"
-    },
-    {
-      "id": 2,
-      "productId": 1,
-      "movementType": "StockIn",
-      "quantity": 10,
-      "quantityBefore": 25,
-      "quantityAfter": 35,
-      "note": "Received supplier shipment PO #8821",
-      "createdAtUtc": "2026-10-15T13:25:10Z"
-    },
-    {
-      "id": 1,
-      "productId": 1,
-      "movementType": "StockIn",
-      "quantity": 25,
-      "quantityBefore": 0,
-      "quantityAfter": 25,
-      "note": "Initial stock receipt upon product creation",
-      "createdAtUtc": "2026-10-15T13:21:40Z"
-    }
-  ],
-  "page": 1,
-  "pageSize": 10,
-  "totalCount": 3,
-  "totalPages": 1
-}
-```
 
 ---
 
@@ -510,85 +558,81 @@ All error responses use the standard `application/problem+json` (`ProblemDetails
 #### 1. Low-Stock Report
 - **Method**: `GET`
 - **Route**: `/api/inventory/low-stock`
-- **Status**: `200 OK`
-- **Description**: Retrieves products where `QuantityInStock <= LowStockThreshold`. Products configured with `LowStockThreshold == 0` are excluded from low-stock alerts.
+- **Authorization**: `Viewer`, `InventoryManager`, or `Admin`
+- **Description**: Retrieves products where `QuantityInStock <= LowStockThreshold`. Products configured with `LowStockThreshold == 0` are excluded.
 
 ---
 
 #### 2. Inventory Summary
 - **Method**: `GET`
 - **Route**: `/api/inventory/summary`
-- **Status**: `200 OK`
-- **Description**: Summarizes inventory statistics across all products. Total inventory value represents current stock evaluated at recorded unit prices (`Sum(UnitPrice * QuantityInStock)`).
-
-**Response (200 OK)**:
-```json
-{
-  "totalProducts": 1,
-  "totalUnitsInStock": 30,
-  "lowStockProductCount": 0,
-  "totalInventoryValue": 3899.70
-}
-```
+- **Authorization**: `Viewer`, `InventoryManager`, or `Admin`
+- **Description**: Summarizes total products, total units, low-stock count, and cumulative decimal valuation (`Sum(UnitPrice * QuantityInStock)`).
 
 ---
 
 ## Business Rules & Invariants
 
-1. **SKU Uniqueness**: SKUs are normalized (trimmed, uppercase) and strictly unique across the system, enforced by both application validation and an indexed database constraint.
-2. **Non-Negative Invariants**: `UnitPrice >= 0`, `QuantityInStock >= 0`, `LowStockThreshold >= 0`.
-3. **Adjustment Quantities**: Stock movements require positive integers (`quantity > 0`).
-4. **Audit Immutability**: Historical `StockMovement` records cannot be updated or deleted through the API.
-5. **No Stock Discrepancies**: Stock cannot be modified directly via `PUT /api/products/{id}`. All quantity changes must create a corresponding `StockMovement`.
-6. **Audit Preservation on Delete**: Products cannot be deleted if historical movements exist or if positive stock remains.
-7. **Zero-Threshold Alert Exclusion**: Products configured with `LowStockThreshold = 0` are excluded from low-stock alerts.
-8. **Decimal Precision**: Money and unit prices strictly use `decimal` in C# and fixed-point mappings in SQLite to avoid floating-point inaccuracies.
+1. **Role Separation**: `Viewer` can only read; `InventoryManager` can adjust inventory and edit products but cannot delete products or manage users; `Admin` has full access.
+2. **Default Role**: Newly registered users always receive `Viewer`. Roles cannot be requested during registration.
+3. **Admin Protection**: The last active administrator in the system cannot be demoted or have their Admin role removed.
+4. **SKU Uniqueness**: SKUs are normalized (trimmed, uppercase) and strictly unique, enforced by application validation and database constraint.
+5. **Non-Negative Invariants**: `UnitPrice >= 0`, `QuantityInStock >= 0`, `LowStockThreshold >= 0`.
+6. **Adjustment Quantities**: Stock movements require positive integers (`quantity > 0`).
+7. **Audit Immutability**: Historical `StockMovement` records cannot be updated or deleted through the API.
+8. **Audit Preservation on Delete**: Products cannot be deleted if historical movements exist or if positive stock remains.
+9. **Zero-Threshold Alert Exclusion**: Products configured with `LowStockThreshold = 0` are excluded from low-stock alerts.
+10. **Decimal Precision**: Money and unit prices strictly use `decimal` in C# and fixed-point mappings in SQLite.
 
 ---
 
 ## Validation & Error Handling
 
-- **Request Validation**: Model attributes enforce mandatory fields, string length bounds, and valid numeric ranges.
-- **ProblemDetails**: All client errors and unhandled exceptions are mapped to RFC 9110 / RFC 7807 compliant JSON:
-  - `400 Bad Request`: Input validation errors or invalid pagination numbers.
+- **Request Validation**: Model attributes enforce mandatory fields, string length bounds, email format, and numeric ranges.
+- **ProblemDetails (RFC 9110 / RFC 7807)**:
+  - `400 Bad Request`: Input validation errors or invalid role names.
+  - `401 Unauthorized`: Missing, expired, or invalid JWT bearer token, or invalid login credentials.
+  - `403 Forbidden`: Authenticated user lacks the required role for the endpoint.
   - `404 Not Found`: Resource ID does not exist.
-  - `409 Conflict`: Duplicate SKU, insufficient stock for stock-out, or prohibited deletion.
-  - `500 Internal Server Error`: Unhandled server exceptions logged via structured logging, with safe generic messages returned to clients.
+  - `409 Conflict`: Duplicate SKU, duplicate user registration email, insufficient stock for stock-out, or prohibited deletion.
+  - `429 Too Many Requests`: Client exceeded authentication rate limit (100 requests / minute).
+  - `500 Internal Server Error`: Unhandled server exceptions logged via structured logging, returning safe generic messages without stack traces.
 
 ---
 
 ## Testing
 
-The project includes **54 automated tests** covering:
-- Domain invariants & entity behaviors (`ProductTests`, `StockMovementTests`).
-- Application use cases, transactional workflows, and calculations (`ProductServiceTests`, `InventoryServiceTests`).
-- Concurrency conflict detection using EF Core concurrency tokens.
-- Full HTTP integration tests via `WebApplicationFactory` and in-memory SQLite (`ApiEndpointsTests`).
+The project includes **69 automated tests** covering:
+- **Domain Invariants**: Entity behaviors (`ProductTests`, `StockMovementTests`).
+- **Application Services**: Catalog workflows, inventory calculations, and concurrency conflict detection (`ProductServiceTests`, `InventoryServiceTests`).
+- **Authentication & RBAC**: Default `Viewer` assignment, password hashing verification, JWT generation, expired/tampered token rejection, role permissions verification, last-admin demotion prevention, and rate limiting (`AuthAndRbacTests`).
+- **HTTP Integration**: End-to-end API verification via `WebApplicationFactory` with in-memory SQLite (`ApiEndpointsTests`).
 
 To execute all tests:
 ```bash
-dotnet test
+dotnet test Stockroom.sln
 ```
 
 Sample output:
 ```
-Passed!  - Failed: 0, Passed: 54, Skipped: 0, Total: 54, Duration: 1 s - Stockroom.Tests.dll (net10.0)
+Passed!  - Failed: 0, Passed: 69, Skipped: 0, Total: 69, Duration: 1 s - Stockroom.Tests.dll (net10.0)
 ```
 
 ---
 
 ## Known Limitations
 
-- **SQLite Concurrency & Locking**: SQLite operates on file-level locks. While SQLite supports concurrent reads, write operations lock the database file. Under extreme high-throughput concurrent write load, operations queue or encounter database lock timeouts.
-- **Concurrency Token Protection**: To safeguard against lost updates in concurrent environments, `Product` includes a `ConcurrencyVersion` token configured with EF Core's `[ConcurrencyCheck]`. When conflicting updates occur, a `DbUpdateConcurrencyException` is caught and converted to a `409 Conflict` ProblemDetails response.
-- **Valuation Methodology**: `TotalInventoryValue` calculates current stock at currently recorded unit prices rather than FIFO, LIFO, or weighted-average accounting costs.
+- **SQLite Concurrency & Locking**: SQLite operates on file-level locks. While SQLite supports concurrent reads, write operations lock the database file. Under heavy write loads, operations queue or encounter database busy timeouts.
+- **Concurrency Token Protection**: To safeguard against lost updates in concurrent environments, `Product` includes a `ConcurrencyVersion` token configured with EF Core's `[ConcurrencyCheck]`. When conflicting updates occur, a `409 Conflict` is returned.
+- **JWT Revocation**: JWT tokens are stateless and remain valid until their expiration timestamp (`exp`). Immediate token revocation (e.g., blacklisting or refresh-token rotation) is not currently implemented; access token lifetimes are kept configurable and reasonably short (default: 60 minutes).
 
 ---
 
 ## Future Improvements
 
-- **Authentication & Authorization**: Add ASP.NET Core Identity or JWT bearer authentication with role-based permissions (Admin, Inventory Manager, Viewer).
+- **Refresh Token Rotation**: Implement short-lived access tokens (15 minutes) paired with secure, httpOnly refresh tokens and sliding revocation.
 - **Suppliers & Purchase Orders**: Expand domain model to track vendor contacts, purchase orders (POs), and automated stock receipts upon PO fulfillment.
+- **Multi-Factor Authentication (MFA)**: Support TOTP (Time-based One-Time Password) apps for administrative logins.
 - **Barcode & QR Scanning**: Support UPC/EAN scanning workflows and thermal label generation.
-- **Webhooks & Notifications**: Dispatch webhook events or email alerts when products drop below their low-stock thresholds.
-- **Cloud & Container Deployment**: Containerize with Docker and provide Kubernetes / AWS ECS deployment manifests with PostgreSQL or SQL Server.
+- **Webhooks & Email Alerts**: Dispatch automated notifications when products drop below low-stock thresholds.
+- **Production Containerization**: Dockerfile and deployment manifests for Kubernetes or AWS ECS with PostgreSQL or SQL Server.

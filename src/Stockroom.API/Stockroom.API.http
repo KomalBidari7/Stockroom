@@ -1,7 +1,40 @@
 @HostAddress = http://localhost:5008
 
-### 1. Create a Product
+### 1. Register a New User (Viewer by default)
+POST {{HostAddress}}/api/auth/register
+Content-Type: application/json
+
+{
+  "email": "user@stockroom.local",
+  "password": "Password123!"
+}
+
+### 2. Login as Admin
+# @name loginAdmin
+POST {{HostAddress}}/api/auth/login
+Content-Type: application/json
+
+{
+  "email": "admin@stockroom.local",
+  "password": "AdminPassword123!"
+}
+
+### Store Token
+@adminToken = {{loginAdmin.response.body.token}}
+
+### 3. Get Current User Profile (Me)
+GET {{HostAddress}}/api/auth/me
+Authorization: Bearer {{adminToken}}
+Accept: application/json
+
+### 4. Admin: List All Users & Roles
+GET {{HostAddress}}/api/admin/users
+Authorization: Bearer {{adminToken}}
+Accept: application/json
+
+### 5. Create a Product (Admin or InventoryManager)
 POST {{HostAddress}}/api/products
+Authorization: Bearer {{adminToken}}
 Content-Type: application/json
 
 {
@@ -13,16 +46,19 @@ Content-Type: application/json
   "lowStockThreshold": 5
 }
 
-### 2. List Products (Paged & Search)
+### 6. List Products (Paged & Search)
 GET {{HostAddress}}/api/products?page=1&pageSize=10
+Authorization: Bearer {{adminToken}}
 Accept: application/json
 
-### 3. Get Product by ID
+### 7. Get Product by ID
 GET {{HostAddress}}/api/products/1
+Authorization: Bearer {{adminToken}}
 Accept: application/json
 
-### 4. Adjust Stock In (Receive Inventory)
+### 8. Adjust Stock In (Receive Inventory)
 POST {{HostAddress}}/api/products/1/stock-in
+Authorization: Bearer {{adminToken}}
 Content-Type: application/json
 
 {
@@ -30,8 +66,9 @@ Content-Type: application/json
   "note": "Warehouse shipment arrival"
 }
 
-### 5. Adjust Stock Out (Dispatch Inventory)
+### 9. Adjust Stock Out (Dispatch Inventory)
 POST {{HostAddress}}/api/products/1/stock-out
+Authorization: Bearer {{adminToken}}
 Content-Type: application/json
 
 {
@@ -39,14 +76,17 @@ Content-Type: application/json
   "note": "Customer order fulfillment"
 }
 
-### 6. View Product Movement Audit History
+### 10. View Product Movement Audit History
 GET {{HostAddress}}/api/products/1/movements?page=1&pageSize=10
+Authorization: Bearer {{adminToken}}
 Accept: application/json
 
-### 7. Low Stock Alerts
+### 11. Low Stock Alerts
 GET {{HostAddress}}/api/inventory/low-stock
+Authorization: Bearer {{adminToken}}
 Accept: application/json
 
-### 8. Inventory Summary & Valuation
+### 12. Inventory Summary & Valuation
 GET {{HostAddress}}/api/inventory/summary
+Authorization: Bearer {{adminToken}}
 Accept: application/json

@@ -50,3 +50,29 @@ public class EntityNotFoundException : DomainException
     {
     }
 }
+
+public class AuthenticationFailedException : DomainException
+{
+    public AuthenticationFailedException(string message = "Invalid email or password.")
+        : base(message)
+    {
+    }
+}
+
+public class IdentityValidationException : DomainException
+{
+    public IReadOnlyList<string> Errors { get; }
+
+    public IdentityValidationException(IEnumerable<string> errors)
+        : base(string.Join("; ", errors))
+    {
+        Errors = errors.ToList();
+    }
+}
+
+public class RoleOperationException : DomainException
+{
+    public RoleOperationException(string message) : base(message)
+    {
+    }
+}
