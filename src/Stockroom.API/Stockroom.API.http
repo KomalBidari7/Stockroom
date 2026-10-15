@@ -1,0 +1,52 @@
+@HostAddress = http://localhost:5008
+
+### 1. Create a Product
+POST {{HostAddress}}/api/products
+Content-Type: application/json
+
+{
+  "name": "Wireless Ergonomic Mouse",
+  "sku": "MOU-ERG-01",
+  "description": "2.4GHz rechargeable wireless mouse",
+  "unitPrice": 49.99,
+  "initialQuantity": 20,
+  "lowStockThreshold": 5
+}
+
+### 2. List Products (Paged & Search)
+GET {{HostAddress}}/api/products?page=1&pageSize=10
+Accept: application/json
+
+### 3. Get Product by ID
+GET {{HostAddress}}/api/products/1
+Accept: application/json
+
+### 4. Adjust Stock In (Receive Inventory)
+POST {{HostAddress}}/api/products/1/stock-in
+Content-Type: application/json
+
+{
+  "quantity": 10,
+  "note": "Warehouse shipment arrival"
+}
+
+### 5. Adjust Stock Out (Dispatch Inventory)
+POST {{HostAddress}}/api/products/1/stock-out
+Content-Type: application/json
+
+{
+  "quantity": 3,
+  "note": "Customer order fulfillment"
+}
+
+### 6. View Product Movement Audit History
+GET {{HostAddress}}/api/products/1/movements?page=1&pageSize=10
+Accept: application/json
+
+### 7. Low Stock Alerts
+GET {{HostAddress}}/api/inventory/low-stock
+Accept: application/json
+
+### 8. Inventory Summary & Valuation
+GET {{HostAddress}}/api/inventory/summary
+Accept: application/json

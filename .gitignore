@@ -1,0 +1,58 @@
+## Build and compilation artifacts
+bin/
+obj/
+out/
+[Bb]uild/
+
+## Visual Studio & Rider
+.vs/
+.idea/
+*.user
+*.userosscache
+*.sln.docstates
+*.suo
+
+## VS Code
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+
+## SQLite databases and local persistence
+*.db
+*.db-shm
+*.db-wal
+*.db-*
+*.sqlite
+*.sqlite3
+stockroom.db*
+
+## Logs, diagnostics and test outputs
+TestResults/
+*.log
+*.trx
+
+## OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+## Secrets, environment variables, credentials, and certificates
+.env
+.env.*
+*.env
+*.local
+*.local.json
+appsettings.*.local.json
+secrets.json
+*.pem
+*.key
+*.pfx
+*.p12
+*.cer
+*.crt
